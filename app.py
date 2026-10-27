@@ -10,12 +10,14 @@ forensic proof. Always route high-risk or borderline results to a human reviewer
 
 from __future__ import annotations
 
+
 import hashlib
 import io
 import json
 import logging
 import os
 import time
+from html import escape
 from typing import Any
 
 import pymupdf  # PyMuPDF - reads PDFs with no Poppler/PATH setup
@@ -389,18 +391,113 @@ def answer_question(
         )
     return text
 
+RISK_META = {
+    "error": {"label": "HIGH RISK", "color": "#ef4444", "icon": "&#9888;", "bg": "rgba(239,68,68,.12)"},
+    "warning": {"label": "NEEDS REVIEW", "color": "#f59e0b", "icon": "&#9201;", "bg": "rgba(245,158,11,.12)"},
+    "success": {"label": "LOW RISK", "color": "#10b981", "icon": "&#10003;", "bg": "rgba(16,185,129,.12)"},
+}
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.block-container { padding-top: 1.6rem; max-width: 1280px; }
+#MainMenu, footer { visibility: hidden; }
+
+/* ---------- hero ---------- */
+.hero {
+    position: relative; overflow: hidden; border-radius: 22px; padding: 34px 38px; margin-bottom: 18px;
+    background: radial-gradient(900px 300px at 85% -20%, rgba(124,58,237,.55), transparent 60%),
+                radial-gradient(700px 300px at 0% 120%, rgba(14,165,233,.45), transparent 60%),
+                linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    border: 1px solid rgba(255,255,255,.08); box-shadow: 0 18px 50px -18px rgba(30,27,75,.8);
+}
+.hero h1 { margin: 0; font-size: 2.3rem; font-weight: 800; color: #fff; letter-spacing: -.02em; }
+.hero h1 span { background: linear-gradient(90deg,#38bdf8,#a78bfa,#f472b6); -webkit-background-clip: text; color: transparent; }
+.hero p { margin: 8px 0 18px; color: #cbd5e1; font-size: 1.02rem; max-width: 640px; }
+.chip { display: inline-block; padding: 5px 13px; margin: 0 8px 6px 0; border-radius: 999px; font-size: .78rem; font-weight: 600;
+        color: #e2e8f0; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(6px); }
+
+/* ---------- stepper ---------- */
+.steps { display: flex; gap: 10px; margin: 6px 0 20px; }
+.step { flex: 1; display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 14px;
+        border: 1px solid rgba(128,128,128,.25); background: rgba(128,128,128,.06); font-weight: 600; font-size: .9rem; opacity: .6; }
+.step .dot { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: .8rem;
+             background: rgba(128,128,128,.25); }
+.step.active { opacity: 1; border-color: #7c3aed; background: rgba(124,58,237,.10); }
+.step.active .dot { background: #7c3aed; color: #fff; }
+.step.done { opacity: 1; border-color: rgba(16,185,129,.5); }
+.step.done .dot { background: #10b981; color: #fff; }
+
+/* ---------- cards / verdict ---------- */
+.verdict { display: flex; align-items: center; gap: 16px; padding: 18px 22px; border-radius: 16px; margin-bottom: 16px; border: 1px solid; }
+.verdict .ico { font-size: 1.6rem; width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center; color: #fff; }
+.verdict .tag { font-size: .72rem; font-weight: 800; letter-spacing: .12em; }
+.verdict .msg { font-size: 1.02rem; font-weight: 600; margin-top: 2px; }
+
+.stat { padding: 16px 18px; border-radius: 16px; border: 1px solid rgba(128,128,128,.25); background: rgba(128,128,128,.06); height: 100%; }
+.stat .k { font-size: .72rem; text-transform: uppercase; letter-spacing: .1em; opacity: .65; font-weight: 700; }
+.stat .v { font-size: 1.35rem; font-weight: 800; margin-top: 6px; line-height: 1.2; word-break: break-word; }
+
+.ring-wrap { display: flex; justify-content: center; padding: 6px 0; }
+.ring { position: relative; width: 150px; height: 150px; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 10; }
+.ring-bg { stroke: rgba(128,128,128,.22); }
+.ring-fg { stroke-linecap: round; animation: ringfill 1.2s ease-out; }
+@keyframes ringfill { from { stroke-dashoffset: 339.3; } }
+.ring-label { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.ring-label b { font-size: 2.2rem; font-weight: 800; line-height: 1; }
+.ring-label span { font-size: .75rem; opacity: .6; font-weight: 600; }
+
+.summary { padding: 16px 20px; border-radius: 16px; border-left: 4px solid #7c3aed; background: rgba(124,58,237,.07); margin: 14px 0 6px; line-height: 1.6; }
+
+.flag { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; margin-bottom: 10px;
+        background: rgba(245,158,11,.10); border: 1px solid rgba(245,158,11,.35); }
+.flag .n { min-width: 26px; height: 26px; border-radius: 8px; background: #f59e0b; color: #fff; display: grid; place-items: center; font-weight: 800; font-size: .8rem; }
+.clean { padding: 22px; text-align: center; border-radius: 14px; background: rgba(16,185,129,.10); border: 1px dashed rgba(16,185,129,.5); font-weight: 600; }
+
+.disclaimer { font-size: .8rem; opacity: .65; margin-top: 14px; text-align: center; }
+.empty { text-align: center; padding: 50px 20px; border-radius: 20px; border: 2px dashed rgba(128,128,128,.35); background: rgba(128,128,128,.04); }
+.empty .big { font-size: 2.6rem; }
+.empty h3 { margin: 6px 0 4px; }
+
+/* ---------- buttons / sidebar ---------- */
+div.stButton > button[kind="primary"] {
+    background: linear-gradient(90deg,#7c3aed,#2563eb); border: 0; color: #fff; font-weight: 700;
+    padding: .7rem 1rem; border-radius: 12px; box-shadow: 0 8px 22px -8px rgba(124,58,237,.7); transition: transform .15s;
+}
+div.stButton > button[kind="primary"]:hover { transform: translateY(-2px); }
+div.stButton > button { border-radius: 10px; }
+[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,.2); }
+.side-title { display: flex; align-items: center; gap: 10px; font-size: 1.15rem; font-weight: 800; margin-bottom: 4px; }
+.side-title .badge { background: linear-gradient(135deg,#7c3aed,#2563eb); color: #fff; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; }
+[data-testid="stFileUploader"] section { border-radius: 16px; border: 2px dashed rgba(124,58,237,.5); background: rgba(124,58,237,.05); }
+[data-testid="stTabs"] button { font-weight: 600; }
+</style>
+"""
+
 
 # --------------------------------------------------------------------------- #
-# UI helpers
+# State
 # --------------------------------------------------------------------------- #
 def init_state() -> None:
-    defaults = {"doc_id": None, "doc_name": None, "pages": [], "analysis": None, "chat": []}
+    defaults = {
+        "doc_id": None,
+        "doc_name": None,
+        "pages": [],
+        "analysis": None,
+        "chat": [],
+        "pending_q": None,
+    }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
 
 def reset_document(doc_id: str, name: str, pages: list[bytes]) -> None:
-    st.session_state.update(doc_id=doc_id, doc_name=name, pages=pages, analysis=None, chat=[])
+    st.session_state.update(
+        doc_id=doc_id, doc_name=name, pages=pages, analysis=None, chat=[], pending_q=None
+    )
 
 
 def verdict(analysis: dict) -> tuple[str, str]:
@@ -412,23 +509,128 @@ def verdict(analysis: dict) -> tuple[str, str]:
     return "success", "Low risk - no significant anomalies found."
 
 
+# --------------------------------------------------------------------------- #
+# Small HTML helpers
+# --------------------------------------------------------------------------- #
+def hero() -> None:
+    st.markdown(
+        """
+<div class="hero">
+  <h1>&#128737; Sentry<span>Doc</span> AI</h1>
+  <p>Upload a certificate, marksheet or ID and get an AI-powered tamper check in seconds -
+     fonts, seals, alignment and internal consistency, all inspected for you.</p>
+  <span class="chip">&#128270; Forgery detection</span>
+  <span class="chip">&#129534; Field extraction</span>
+  <span class="chip">&#128172; Ask the document</span>
+  <span class="chip">&#128196; PDF / PNG / JPG</span>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def stepper(has_doc: bool, has_report: bool) -> None:
+    def cls(done: bool, active: bool) -> str:
+        return "done" if done else ("active" if active else "")
+
+    s1 = cls(has_doc, not has_doc)
+    s2 = cls(has_report, has_doc and not has_report)
+    s3 = cls(False, has_report)
+    st.markdown(
+        f"""
+<div class="steps">
+  <div class="step {s1}"><div class="dot">{'&#10003;' if has_doc else '1'}</div>Upload document</div>
+  <div class="step {s2}"><div class="dot">{'&#10003;' if has_report else '2'}</div>Verify with AI</div>
+  <div class="step {s3}"><div class="dot">3</div>Review &amp; ask questions</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def score_ring(score: float, color: str) -> str:
+    score = max(0.0, min(100.0, float(score)))
+    circumference = 339.29
+    offset = circumference * (1 - score / 100)
+    return (
+        '<div class="ring-wrap"><div class="ring">'
+        '<svg viewBox="0 0 120 120">'
+        '<circle class="ring-bg" cx="60" cy="60" r="54"/>'
+        f'<circle class="ring-fg" cx="60" cy="60" r="54" stroke="{color}" '
+        f'stroke-dasharray="{circumference}" stroke-dashoffset="{offset:.1f}"/>'
+        "</svg>"
+        f'<div class="ring-label"><b>{score:.0f}</b><span>/ 100</span></div>'
+        "</div></div>"
+    )
+
+
+def stat_card(label: str, value: str, color: str | None = None) -> str:
+    style = f' style="color:{color}"' if color else ""
+    return f'<div class="stat"><div class="k">{escape(label)}</div><div class="v"{style}>{escape(str(value))}</div></div>'
+
+
+def empty_state() -> None:
+    st.markdown(
+        """
+<div class="empty">
+  <div class="big">&#128196;</div>
+  <h3>No document yet</h3>
+  <div style="opacity:.7">Drop a PDF, PNG or JPG above to preview it here and run a verification.</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Report
+# --------------------------------------------------------------------------- #
 def render_report(analysis: dict) -> None:
     level, message = verdict(analysis)
-    getattr(st, level)(message)
+    meta = RISK_META[level]
+    score = analysis["authenticity_score"]
+    tampered = analysis["tampering_detected"]
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Authenticity score", f"{analysis['authenticity_score']} / 100")
-    c2.metric("Tampering detected", "Yes" if analysis["tampering_detected"] else "No")
-    c3.metric("Document type", analysis["document_type"])
-    st.progress(analysis["authenticity_score"] / 100)
+    # Verdict banner
+    st.markdown(
+        f"""
+<div class="verdict" style="background:{meta['bg']};border-color:{meta['color']}66">
+  <div class="ico" style="background:{meta['color']}">{meta['icon']}</div>
+  <div>
+    <div class="tag" style="color:{meta['color']}">{meta['label']}</div>
+    <div class="msg">{escape(message)}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Score ring + stat cards
+    ring_col, stats_col = st.columns([1, 1.5], gap="medium")
+    with ring_col:
+        st.markdown(score_ring(score, meta["color"]), unsafe_allow_html=True)
+    with stats_col:
+        a, b = st.columns(2)
+        a.markdown(
+            stat_card("Tampering", "Detected" if tampered else "Not detected", "#ef4444" if tampered else "#10b981"),
+            unsafe_allow_html=True,
+        )
+        b.markdown(stat_card("Document type", analysis["document_type"]), unsafe_allow_html=True)
+        st.write("")
+        c, d = st.columns(2)
+        c.markdown(stat_card("Flags raised", str(len(analysis["flagged_reasons"]))), unsafe_allow_html=True)
+        d.markdown(stat_card("Fields found", str(len(analysis["extracted_fields"]))), unsafe_allow_html=True)
 
     if analysis.get("summary"):
-        st.write(analysis["summary"])
+        st.markdown(f'<div class="summary">{escape(analysis["summary"])}</div>', unsafe_allow_html=True)
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Extracted fields")
-        fields = analysis["extracted_fields"]
+    # Details in tabs
+    flags = analysis["flagged_reasons"]
+    fields = analysis["extracted_fields"]
+    t_fields, t_flags, t_json = st.tabs(
+        [f":material/badge: Extracted fields ({len(fields)})", f":material/flag: Flagged reasons ({len(flags)})", ":material/data_object: Raw JSON"]
+    )
+    with t_fields:
         if fields:
             st.dataframe(
                 [{"Field": k, "Value": v} for k, v in fields.items()],
@@ -437,43 +639,71 @@ def render_report(analysis: dict) -> None:
             )
         else:
             st.caption("No fields could be extracted.")
-    with right:
-        st.subheader("Flagged reasons")
-        if analysis["flagged_reasons"]:
-            for reason in analysis["flagged_reasons"]:
-                st.warning(reason, icon=":material/flag:")
+    with t_flags:
+        if flags:
+            for i, reason in enumerate(flags, 1):
+                st.markdown(
+                    f'<div class="flag"><div class="n">{i}</div><div>{escape(str(reason))}</div></div>',
+                    unsafe_allow_html=True,
+                )
         else:
-            st.success("Nothing flagged.", icon=":material/check_circle:")
-
-    with st.expander("Raw JSON"):
+            st.markdown('<div class="clean">&#10003; Nothing flagged.</div>', unsafe_allow_html=True)
+    with t_json:
         st.json(analysis)
+
     st.download_button(
         "Download report (JSON)",
         data=json.dumps(analysis, indent=2),
         file_name="sentrydoc_report.json",
         mime="application/json",
+        icon=":material/download:",
+        width="stretch",
+    )
+    st.markdown(
+        '<div class="disclaimer">The score is an AI risk signal for triage, not proof of forgery or authenticity.</div>',
+        unsafe_allow_html=True,
     )
 
 
+# --------------------------------------------------------------------------- #
+# Chat (sidebar)
+# --------------------------------------------------------------------------- #
+SUGGESTIONS = ["Is the signature present?", "Which seal is on this page?", "Any mismatched fonts?"]
+
+
 def render_chat(client: genai.Client | None, model: str) -> None:
-    st.sidebar.header("Ask about this document")
+    sb = st.sidebar
+    sb.markdown(
+        '<div class="side-title"><div class="badge">&#128172;</div>Ask about this document</div>',
+        unsafe_allow_html=True,
+    )
     if not st.session_state.pages:
-        st.sidebar.info("Upload a document to start asking questions.")
+        sb.info("Upload a document to start asking questions.", icon=":material/upload_file:")
         return
     if client is None:
-        st.sidebar.warning("Add your Gemini API key to enable chat.")
+        sb.warning("Add your Gemini API key to enable chat.", icon=":material/key:")
         return
 
-    box = st.sidebar.container(height=420)
+    sb.caption(f"Document: **{st.session_state.doc_name}**")
+
+    box = sb.container(height=400, border=True)
     with box:
         if not st.session_state.chat:
-            st.caption('Try: "Is the signature present?" or "Which seal is on this page?"')
+            st.caption("Quick questions:")
         for msg in st.session_state.chat:
-            with st.chat_message(msg["role"]):
+            with st.chat_message(msg["role"], avatar=":material/person:" if msg["role"] == "user" else ":material/verified_user:"):
                 st.markdown(msg["content"])
 
-    question = st.sidebar.chat_input("Ask a question about the document")
+    # Quick-question buttons (only before the first message)
+    if not st.session_state.chat:
+        for i, text in enumerate(SUGGESTIONS):
+            if sb.button(text, key=f"sug_{i}", width="stretch"):
+                st.session_state.pending_q = text
+                st.rerun()
+
+    question = st.session_state.pending_q or sb.chat_input("Ask a question about the document")
     if question:
+        st.session_state.pending_q = None
         history = list(st.session_state.chat)
         st.session_state.chat.append({"role": "user", "content": question})
         try:
@@ -486,15 +716,18 @@ def render_chat(client: genai.Client | None, model: str) -> None:
         st.session_state.chat.append({"role": "assistant", "content": answer})
         st.rerun()
 
-    if st.session_state.chat and st.sidebar.button("Clear chat"):
+    if st.session_state.chat and sb.button("Clear chat", icon=":material/delete:", width="stretch"):
         st.session_state.chat = []
         st.rerun()
 
 
+# --------------------------------------------------------------------------- #
+# Settings
+# --------------------------------------------------------------------------- #
 def render_settings() -> tuple[genai.Client | None, str]:
     """Settings box: a typed key overrides the .env/environment key."""
     env_key = clean_key(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    with st.expander("Settings", expanded=not env_key):
+    with st.expander("Settings", expanded=not env_key, icon=":material/tune:"):
         typed = clean_key(
             st.text_input(
                 "Gemini API key",
@@ -520,12 +753,12 @@ def render_settings() -> tuple[genai.Client | None, str]:
         if api_key:
             source = "Settings box" if typed else ".env / environment"
             st.caption(
-                f"Using key from {source} - {len(api_key)} characters, "
+                f":material/lock: Using key from {source} - {len(api_key)} characters, "
                 f"starts with '{api_key[:3]}', ends with '{api_key[-3:]}'."
             )
         client = get_client(api_key) if api_key else None
 
-        if st.button("Test connection", disabled=client is None):
+        if st.button("Test connection", disabled=client is None, icon=":material/wifi_tethering:"):
             try:
                 with st.spinner("Contacting Gemini..."):
                     reply = test_connection(client, model)
@@ -539,12 +772,16 @@ def render_settings() -> tuple[genai.Client | None, str]:
 # Main
 # --------------------------------------------------------------------------- #
 def main() -> None:
-    st.set_page_config(page_title="SentryDoc AI", page_icon=":material/verified_user:", layout="wide")
+    st.set_page_config(
+        page_title="SentryDoc AI",
+        page_icon=":material/verified_user:",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    st.markdown(CSS, unsafe_allow_html=True)
     init_state()
 
-    st.title("SentryDoc AI")
-    st.caption("Upload a certificate, marksheet or ID to check it for signs of tampering.")
-
+    hero()
     client, model = render_settings()
 
     uploaded = st.file_uploader("Document (PDF, PNG or JPG)", type=ALLOWED_TYPES)
@@ -561,35 +798,47 @@ def main() -> None:
                 st.session_state.update(doc_id=None, pages=[], analysis=None, chat=[])
                 st.error(str(exc))
     else:
-        st.session_state.update(doc_id=None, pages=[], analysis=None, chat=[])
+        st.session_state.update(doc_id=None, pages=[], analysis=None, chat=[], pending_q=None)
 
     pages = st.session_state.pages
+    stepper(bool(pages), bool(st.session_state.analysis))
+
     if pages:
         preview, report = st.columns([1, 1.4], gap="large")
         with preview:
-            if len(pages) > 1:
-                tabs = st.tabs([f"Page {n}" for n in range(1, len(pages) + 1)])
-                for tab, png in zip(tabs, pages):
-                    tab.image(png, width="stretch")
-            else:
-                st.image(pages[0], width="stretch")
-            if uploaded is not None and uploaded.name.lower().endswith(".pdf"):
-                st.caption(f"Analyzing up to the first {MAX_PDF_PAGES} pages.")
+            with st.container(border=True):
+                st.markdown(f"**:material/description: {escape(st.session_state.doc_name or 'Document')}**")
+                if len(pages) > 1:
+                    tabs = st.tabs([f"Page {n}" for n in range(1, len(pages) + 1)])
+                    for tab, png in zip(tabs, pages):
+                        tab.image(png, width="stretch")
+                else:
+                    st.image(pages[0], width="stretch")
+                if uploaded is not None and uploaded.name.lower().endswith(".pdf"):
+                    st.caption(f"Analyzing up to the first {MAX_PDF_PAGES} pages.")
 
         with report:
-            if st.button("Verify document", type="primary", disabled=client is None):
+            if st.button(
+                "Verify document",
+                type="primary",
+                disabled=client is None,
+                icon=":material/verified_user:",
+                width="stretch",
+            ):
                 try:
                     with st.spinner("Inspecting fonts, seals, alignment and consistency..."):
                         st.session_state.analysis = analyze_document(client, model, pages)
+                    st.rerun()
                 except SentryDocError as exc:
                     st.error(str(exc))
             if client is None:
-                st.info("Add your Gemini API key in Settings to verify documents.")
+                st.info("Add your Gemini API key in Settings to verify documents.", icon=":material/key:")
             if st.session_state.analysis:
                 render_report(st.session_state.analysis)
-                st.caption(
-                    "The score is an AI risk signal for triage, not proof of forgery or authenticity."
-                )
+            elif client is not None:
+                st.caption("Press **Verify document** to run the tamper analysis.")
+    else:
+        empty_state()
 
     render_chat(client, model)
 
